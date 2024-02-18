@@ -1,0 +1,211 @@
+From 9442ac42c93994b05a0f55da99db94ac33962e8a Mon Sep 17 00:00:00 2001
+From: Milano22kk <963786615@qq.com>
+Date: Sun, 18 Feb 2024 16:31:14 +0800
+Subject: [PATCH] gazebo mavlink plg support udp && udp specify client port &&
+ C++14 optional
+
+---
+ include/gazebo_gimbal_controller_plugin.hh |  4 +-
+ include/mavlink_interface.h                |  3 ++
+ models/iris_hitl/iris_hitl.sdf             |  3 +-
+ src/gazebo_gimbal_controller_plugin.cpp    |  2 +-
+ src/gazebo_mavlink_interface.cpp           |  7 +++-
+ src/mavlink_interface.cpp                  | 65 +++++++++++++++++++++---------
+ 6 files changed, 61 insertions(+), 23 deletions(-)
+
+diff --git a/include/gazebo_gimbal_controller_plugin.hh b/include/gazebo_gimbal_controller_plugin.hh
+index 016f436..8d8889d 100644
+--- a/include/gazebo_gimbal_controller_plugin.hh
++++ b/include/gazebo_gimbal_controller_plugin.hh
+@@ -26,7 +26,7 @@
+ #include <vector>
+ #include <mutex>
+ #include <memory>
+-#include <optional>
++#include <experimental/optional>
+ #include <thread>
+ 
+ #include <gazebo/common/PID.hh>
+@@ -95,7 +95,7 @@ namespace gazebo
+     private: void HandleRequestMessage(uint8_t target_sysid, uint8_t target_compid, const mavlink_command_long_t& command_long);
+     private: void HandleSetMessageInterval(uint8_t target_sysid, uint8_t target_compid, const mavlink_command_long_t& command_long);
+ 
+-    private: static std::optional<double> calcSetpoint(double dt, double lastSetpoint, double newSetpoint, double newRateSetpoint);
++	private: static std::experimental::optional<double> calcSetpoint(double dt, double lastSetpoint, double newSetpoint, double newRateSetpoint);
+ 
+     private: std::mutex cmd_mutex;
+ 
+diff --git a/include/mavlink_interface.h b/include/mavlink_interface.h
+index 4022323..fcf5d2a 100644
+--- a/include/mavlink_interface.h
++++ b/include/mavlink_interface.h
+@@ -172,6 +172,8 @@ public:
+     void SetMavlinkAddr(std::string mavlink_addr) {mavlink_addr_str_ = mavlink_addr;}
+     void SetMavlinkTcpPort(int mavlink_tcp_port) {mavlink_tcp_port_ = mavlink_tcp_port;}
+     void SetMavlinkUdpPort(int mavlink_udp_port) {mavlink_udp_port_ = mavlink_udp_port;}
++	void SetMavlinkRemoteUdpPort(int mavlink_remote_udp_port) {
++		mavlink_remote_udp_port_ = mavlink_remote_udp_port;}
+     void SetQgcAddr(std::string qgc_addr) {qgc_addr_ = qgc_addr;}
+     void SetQgcUdpPort(int qgc_udp_port) {qgc_udp_port_ = qgc_udp_port;}
+     void SetSdkAddr(std::string sdk_addr) {sdk_addr_ = sdk_addr;}
+@@ -240,6 +242,7 @@ private:
+     std::string mavlink_addr_str_{"INADDR_ANY"};
+     int mavlink_udp_port_{kDefaultMavlinkUdpPort}; // MAVLink refers to the PX4 simulator interface here
+     int mavlink_tcp_port_{kDefaultMavlinkTcpPort}; // MAVLink refers to the PX4 simulator interface here
++	int mavlink_remote_udp_port_{0};
+ 
+ 
+     int simulator_socket_fd_{0};
+diff --git a/models/iris_hitl/iris_hitl.sdf b/models/iris_hitl/iris_hitl.sdf
+index 0895341..69adebc 100644
+--- a/models/iris_hitl/iris_hitl.sdf
++++ b/models/iris_hitl/iris_hitl.sdf
+@@ -491,7 +491,8 @@
+       <mavlink_addr>INADDR_ANY</mavlink_addr>
+       <mavlink_tcp_port>4560</mavlink_tcp_port>
+       <mavlink_udp_port>14560</mavlink_udp_port>
+-      <serialEnabled>1</serialEnabled>
++	  <mavlink_remote_udp_port>9002</mavlink_remote_udp_port>
++      <serialEnabled>0</serialEnabled>
+       <serialDevice>/dev/ttyACM0</serialDevice>
+       <baudRate>921600</baudRate>
+       <qgc_addr>INADDR_ANY</qgc_addr>
+diff --git a/src/gazebo_gimbal_controller_plugin.cpp b/src/gazebo_gimbal_controller_plugin.cpp
+index 5cc1512..a253cd2 100644
+--- a/src/gazebo_gimbal_controller_plugin.cpp
++++ b/src/gazebo_gimbal_controller_plugin.cpp
+@@ -915,7 +915,7 @@ void GimbalControllerPlugin::HandleSetMessageInterval(uint8_t target_sysid, uint
+   }
+ }
+ 
+-std::optional<double> GimbalControllerPlugin::calcSetpoint(double dt, double lastSetpoint, double newSetpoint, double newRateSetpoint)
++std::experimental::optional<double> GimbalControllerPlugin::calcSetpoint(double dt, double lastSetpoint, double newSetpoint, double newRateSetpoint)
+ {
+   const bool setpointValid = std::isfinite(newSetpoint);
+   const bool rateSetpointValid = std::isfinite(newRateSetpoint);
+diff --git a/src/gazebo_mavlink_interface.cpp b/src/gazebo_mavlink_interface.cpp
+index bb323ed..c66940a 100644
+--- a/src/gazebo_mavlink_interface.cpp
++++ b/src/gazebo_mavlink_interface.cpp
+@@ -185,7 +185,6 @@ void GazeboMavlinkInterface::CreateSensorSubscription(
+ }
+ 
+ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf) {
+-
+   model_ = _model;
+   world_ = model_->GetWorld();
+ 
+@@ -486,6 +485,12 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
+     mavlink_interface_->SetMavlinkUdpPort(mavlink_udp_port);
+   }
+ 
++  if (_sdf->HasElement("mavlink_remote_udp_port")) {
++    int mavlink_remote_udp_port = 
++		_sdf->GetElement("mavlink_remote_udp_port")->Get<int>();
++	mavlink_interface_->SetMavlinkRemoteUdpPort(mavlink_remote_udp_port);
++  }
++
+   if (_sdf->HasElement("mavlink_tcp_port")) {
+     int mavlink_tcp_port = _sdf->GetElement("mavlink_tcp_port")->Get<int>();
+     mavlink_interface_->SetMavlinkTcpPort(mavlink_tcp_port);
+diff --git a/src/mavlink_interface.cpp b/src/mavlink_interface.cpp
+index 43bab08..5408dc5 100644
+--- a/src/mavlink_interface.cpp
++++ b/src/mavlink_interface.cpp
+@@ -172,7 +172,7 @@ void MavlinkInterface::Load()
+         // When connecting to HITL via UDP, the vehicle talks to a specific port that we need to
+         // listen to.
+         remote_simulator_addr_.sin_addr.s_addr = htonl(INADDR_ANY);
+-        remote_simulator_addr_.sin_port = htons(0);
++        remote_simulator_addr_.sin_port = htons(mavlink_remote_udp_port_);
+         local_simulator_addr_.sin_addr.s_addr = mavlink_addr_;
+         local_simulator_addr_.sin_port = htons(mavlink_udp_port_);
+       }
+@@ -376,22 +376,50 @@ void MavlinkInterface::pollForMAVLinkMessages()
+ 
+   received_actuator_ = false;
+ 
+-  do {
+-    const bool needs_to_wait_for_actuator = received_first_actuator_ && enable_lockstep_;
+-    int timeout_ms = needs_to_wait_for_actuator ? 1000 : 0;
+-    int ret = ::poll(&fds_[0], N_FDS, timeout_ms);
+-
+-    if (ret < 0) {
+-      std::cerr << "poll error: " << strerror(errno) << "\n";
+-      return;
+-    }
++  // 1.udp
++  if (!use_tcp_) { // udp nothing received
++	int ret = recvfrom(fds_[CONNECTION_FD].fd, buf_, sizeof(buf_), 0, 
++			(struct sockaddr *)&remote_simulator_addr_, &remote_simulator_addr_len_);
++	if (ret < 0) {
++	  // all data is read if EWOULDBLOCK is raised
++	  if (errno != EWOULDBLOCK) { // disconnected from client
++		std::cerr << "recvfrom error: " << strerror(errno) << "\n";
++	  }
++	  return;
++	}
++
++	int len = ret;
++	mavlink_message_t msg;
++	mavlink_status_t status;
++	for (unsigned i = 0; i < len; ++i) {
++	  if (mavlink_parse_char(MAVLINK_COMM_0, buf_[i], &msg, &status)) {
++		if (hil_mode_ && serial_enabled_) {
++		  send_mavlink_message(&msg);
++		}
++		handle_message(&msg);
++	  }
++	}
++    return;
++  }
+ 
+-    if (ret == 0) {
+-      if (needs_to_wait_for_actuator) {
+-        std::cerr << "poll timeout\n";
+-      }
+-      return;
+-    }
++  // 2. tcp
++  do {
++	const bool needs_to_wait_for_actuator = 
++		received_first_actuator_ && enable_lockstep_;
++	int timeout_ms = needs_to_wait_for_actuator ? 1000 : 0;
++	int ret = ::poll(&fds_[0], N_FDS, timeout_ms);
++
++	if (ret < 0) {
++	  std::cerr << "poll error: " << strerror(errno) << "\n";
++	  return;
++	}
++
++	if (ret == 0) {
++	  if (needs_to_wait_for_actuator) {
++		std::cerr << "poll timeout\n";
++	  }
++	  return;
++	}
+ 
+     for (int i = 0; i < N_FDS; i++) {
+       if(fds_[i].revents == 0) {
+@@ -405,7 +433,8 @@ void MavlinkInterface::pollForMAVLinkMessages()
+       if (i == LISTEN_FD) { // if event is raised on the listening socket
+         acceptConnections();
+       } else { // if event is raised on connection socket
+-        int ret = recvfrom(fds_[i].fd, buf_, sizeof(buf_), 0, (struct sockaddr *)&remote_simulator_addr_, &remote_simulator_addr_len_);
++        int ret = recvfrom(fds_[i].fd, buf_, sizeof(buf_), 0, 
++				(struct sockaddr *)&remote_simulator_addr_, &remote_simulator_addr_len_);
+         if (ret < 0) {
+           // all data is read if EWOULDBLOCK is raised
+           if (errno != EWOULDBLOCK) { // disconnected from client
+@@ -421,7 +450,7 @@ void MavlinkInterface::pollForMAVLinkMessages()
+           continue;
+         }
+ 
+-        // data received
++	    // data received
+         int len = ret;
+         mavlink_message_t msg;
+         mavlink_status_t status;
+-- 
+2.7.4
+
